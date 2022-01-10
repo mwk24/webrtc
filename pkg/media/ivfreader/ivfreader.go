@@ -47,13 +47,13 @@ type IVFFrameHeader struct {
 
 // IVFReader is used to read IVF files and return frame payloads
 type IVFReader struct {
-	stream               io.Reader
+	stream               io.ReadSeeker
 	bytesReadSuccesfully int64
 }
 
 // NewWith returns a new IVF reader and IVF file header
 // with an io.Reader input
-func NewWith(in io.Reader) (*IVFReader, *IVFFileHeader, error) {
+func NewWith(in io.ReadSeeker) (*IVFReader, *IVFFileHeader, error) {
 	if in == nil {
 		return nil, nil, errNilStream
 	}
@@ -74,7 +74,14 @@ func NewWith(in io.Reader) (*IVFReader, *IVFFileHeader, error) {
 // for live streams, where the end of the file might be read without the
 // data being finished.
 func (i *IVFReader) ResetReader(reset func(bytesRead int64) io.Reader) {
-	i.stream = reset(i.bytesReadSuccesfully)
+	//reset(i.bytesReadSuccesfully) // How to fix this?
+}
+
+var timestampToByte map[uint64]uint64 = make(map[uint64]uint64)
+
+func (i *IVFReader) SkipToTimestamp(timestamp uint64) error {
+	i.stream.Seek(int64(timestampToByte[timestamp]), io.SeekStart)
+	return nil
 }
 
 // ParseNextFrame reads from stream and returns IVF frame payload, header,
@@ -84,8 +91,7 @@ func (i *IVFReader) ParseNextFrame() ([]byte, *IVFFrameHeader, error) {
 	buffer := make([]byte, ivfFrameHeaderSize)
 	var header *IVFFrameHeader
 
-	bytesRead, err := io.ReadFull(i.stream, buffer)
-	headerBytesRead := bytesRead
+	headerBytesRead, err := io.ReadFull(i.stream, buffer)
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return nil, nil, errIncompleteFrameHeader
 	} else if err != nil {
@@ -98,14 +104,18 @@ func (i *IVFReader) ParseNextFrame() ([]byte, *IVFFrameHeader, error) {
 	}
 
 	payload := make([]byte, header.FrameSize)
-	bytesRead, err = io.ReadFull(i.stream, payload)
+	payloadBytesRead, err := io.ReadFull(i.stream, payload)
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return nil, nil, errIncompleteFrameData
 	} else if err != nil {
 		return nil, nil, err
 	}
 
-	i.bytesReadSuccesfully += int64(headerBytesRead) + int64(bytesRead)
+	// Save an index of timestamp to current byte position
+	timestampToByte[header.Timestamp] = uint64(i.bytesReadSuccesfully) + 1
+
+	i.bytesReadSuccesfully += int64(headerBytesRead) + int64(payloadBytesRead)
+
 	return payload, header, nil
 }
 
