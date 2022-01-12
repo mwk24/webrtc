@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 )
 
 const (
@@ -80,7 +81,17 @@ func (i *IVFReader) ResetReader(reset func(bytesRead int64) io.Reader) {
 var timestampToByte map[uint64]uint64 = make(map[uint64]uint64)
 
 func (i *IVFReader) SkipToTimestamp(timestamp uint64) error {
-	i.stream.Seek(int64(timestampToByte[timestamp]), io.SeekStart)
+	log.Print("Seeking to byte: ", timestampToByte[timestamp]+1)
+	newOffset, err := i.stream.Seek(int64(timestampToByte[timestamp]), io.SeekStart)
+
+	if err != nil {
+		log.Print("Error seeking: ", err)
+		return err
+	}
+
+	// Reset our marker (This is hacky)
+	i.bytesReadSuccesfully = newOffset
+
 	return nil
 }
 
@@ -112,7 +123,7 @@ func (i *IVFReader) ParseNextFrame() ([]byte, *IVFFrameHeader, error) {
 	}
 
 	// Save an index of timestamp to current byte position
-	timestampToByte[header.Timestamp] = uint64(i.bytesReadSuccesfully) + 1
+	timestampToByte[header.Timestamp] = uint64(i.bytesReadSuccesfully) // (byte index 32 is the 33rd)
 
 	i.bytesReadSuccesfully += int64(headerBytesRead) + int64(payloadBytesRead)
 
