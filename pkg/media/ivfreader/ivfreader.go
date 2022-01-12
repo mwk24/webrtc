@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 )
 
 const (
@@ -48,8 +49,9 @@ type IVFFrameHeader struct {
 
 // IVFReader is used to read IVF files and return frame payloads
 type IVFReader struct {
-	stream               io.ReadSeeker
-	bytesReadSuccesfully int64
+	stream                  io.ReadSeeker
+	bytesReadSuccesfully    int64
+	mostRecentTimestampRead uint64
 }
 
 // NewWith returns a new IVF reader and IVF file header
@@ -78,19 +80,34 @@ func (i *IVFReader) ResetReader(reset func(bytesRead int64) io.Reader) {
 	//reset(i.bytesReadSuccesfully) // How to fix this?
 }
 
-var timestampToByte map[uint64]uint64 = make(map[uint64]uint64)
+var timestampToByte = sync.Map{}
+
+func (i *IVFReader) SkipNumberOfTimestamps(skipAmount int64) {
+	newTimestamp := int64(i.mostRecentTimestampRead) + skipAmount + 1
+	// Add 1 because it's moving 1 anyway??
+	i.SkipToTimestamp(uint64(newTimestamp))
+}
 
 func (i *IVFReader) SkipToTimestamp(timestamp uint64) error {
-	log.Print("Seeking to byte: ", timestampToByte[timestamp]+1)
-	newOffset, err := i.stream.Seek(int64(timestampToByte[timestamp]), io.SeekStart)
+	log.Print("Requesting timestamp: ", timestamp)
+
+	bytePosition, found := timestampToByte.Load(timestamp)
+	if !found {
+		log.Print("Timestamp not found")
+		return nil
+	}
+
+	log.Printf("Seeking to timestamp %d and byte number: %d", timestamp, bytePosition.(uint64)+uint64(1))
+	newOffset, err := i.stream.Seek(int64(bytePosition.(uint64)), io.SeekStart)
 
 	if err != nil {
 		log.Print("Error seeking: ", err)
 		return err
 	}
 
-	// Reset our marker (This is hacky)
+	// Reset our marker (This is hacky?)
 	i.bytesReadSuccesfully = newOffset
+	i.mostRecentTimestampRead = timestamp
 
 	return nil
 }
@@ -122,9 +139,10 @@ func (i *IVFReader) ParseNextFrame() ([]byte, *IVFFrameHeader, error) {
 		return nil, nil, err
 	}
 
-	// Save an index of timestamp to current byte position
-	timestampToByte[header.Timestamp] = uint64(i.bytesReadSuccesfully) // (byte index 32 is the 33rd)
+	// Save an index of timestamp to current byte position (need to match type on retrieval)
+	timestampToByte.Store(header.Timestamp, uint64(i.bytesReadSuccesfully)) // (byte index 32 is the 33rd)
 
+	i.mostRecentTimestampRead = header.Timestamp
 	i.bytesReadSuccesfully += int64(headerBytesRead) + int64(payloadBytesRead)
 
 	return payload, header, nil
